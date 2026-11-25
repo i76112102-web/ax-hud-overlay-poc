@@ -46,6 +46,8 @@
     <!-- 关键 3：要 openURL 拉起的 App scheme 必须在这里声明，否则 canOpenURL 返回 NO -->
     <key>LSApplicationQueriesSchemes</key>
     <array>
+        <string>sgame</string>
+        <string>tencentgame</string>
         <string>music</string>
         <string>qqmusic</string>
         <string>orpheus</string>

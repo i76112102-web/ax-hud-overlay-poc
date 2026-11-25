@@ -1,33 +1,45 @@
 //
 //  AppDelegate.m
-//  PiPOverlay 演示 —— 「拉起目标 App 后 HUD 浮在它界面之上」
+//  PiPOverlay —— 免越狱跨 App 悬浮（PiP 路径）
 //
-//  时序：
-//    1. 点按钮 → 启动 PiP（系统托管浮窗，此时还压在自己界面上）
-//    2. PiP 进入浮窗态（didStartPictureInPicture）→ 延迟 1.2s
-//    3. openURL 拉起目标 App → 自己进后台
-//    4. 后台音频保活 + PiP 由系统持有 → HUD 继续显示在目标 App 界面之上
+//  能力边界（必读）：
+//    iOS 上「在别的 App 界面之上放一个可点击的原生悬浮窗」没有官方 API。
+//    PiP 是唯一被允许跨 App 的浮层，但它是一个视频窗：
+//      - 能显示任意自绘画面、能拖动缩放        ✅
+//      - 内容里的按钮不能点（手势被系统接管）  ❌
+//    浮窗上唯一的触摸回传通道是「播放/暂停」按钮 → setPlaying: 回调。
+//    本实现就利用它做「点浮窗 → 切换成 HUD 菜单」。
 //
-//  这是免越狱下唯一能做到「切到任意 App 后仍然浮在上面」的官方路径。
-//  样本走的是容器化（把目标 App 加载进自己进程），效果等价但工程量大一个量级。
+//  关于样本 AX Pro Max：它没有走 openURL，二进制里没有任何 sgame/tencentgame
+//  字符串，走的是 AXZQBundleEnumerator + 解包 + 二次 UIApplicationMain，
+//  也就是把目标 App 装进**自己进程**里跑。同进程的 window 当然能点，
+//  这是它「点图标展开菜单」成立的原因，代价是要自己实现一个容器宿主。
 //
 
 #import "AppDelegate.h"
 #import "PiPManager.h"
+#import <math.h>
 
-// 拉起哪个 App：改成目标 App 已注册的 URL Scheme
-// 常见：music://（音乐）  qqmusic://  orpheus://（QQ音乐）  bilibili://  youtube://
-static NSString *const kLaunchURLString = @"music://";
-// 不想自动拉起就置 NO，改为手动按 Home 验证
-static BOOL const kAutoLaunchAfterPiP = YES;
+/// 依次尝试的目标 scheme（第一个 canOpenURL 通过的胜出）
+static NSArray<NSString *> *kTargetSchemes(void) {
+    return @[ @"sgame://", @"tencentgame://", @"qqmusic://", @"music://" ];
+}
+
+typedef NS_ENUM(NSInteger, HUDMode) {
+    HUDModeIcon = 0,   // 悬浮球
+    HUDModeMenu = 1,   // 展开菜单
+};
 
 @interface AppDelegate ()
 @property (nonatomic, strong) UIWindow *mainWindow;
-@property (nonatomic, strong) UIWindow *pipHost;
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UIView *preview;
+@property (nonatomic, strong) UITextView *logView;
+@property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, assign) NSInteger tick;
 @property (nonatomic, strong) NSTimer *timer;
-@property (nonatomic, assign) BOOL launched;
+@property (nonatomic, assign) UIBackgroundTaskIdentifier bgTask;
+@property (nonatomic, assign) HUDMode mode;
 @end
 
 @implementation AppDelegate
@@ -35,96 +47,183 @@ static BOOL const kAutoLaunchAfterPiP = YES;
 - (BOOL)application:(UIApplication *)app
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
+    self.logLines = [NSMutableArray array];
+    self.mode = HUDModeIcon;
+
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    CGFloat pad = 18;
+    CGFloat w = scr.width - pad * 2;
+
     self.mainWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-
     UIViewController *root = [UIViewController new];
-    root.view.backgroundColor = [UIColor colorWithWhite:0.09 alpha:1.0];
+    root.view.backgroundColor = [UIColor colorWithWhite:0.07 alpha:1.0];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(24, 120, root.view.bounds.size.width - 48, 90)];
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(pad, 54, w, 46)];
     title.numberOfLines = 0;
     title.textAlignment = NSTextAlignmentCenter;
     title.textColor = UIColor.whiteColor;
-    title.font = [UIFont boldSystemFontOfSize:22];
-    title.text = @"拉起目标 App 后\nHUD 仍浮在它上面";
+    title.font = [UIFont boldSystemFontOfSize:17];
+    title.text = @"PiP 悬浮 · 拉起游戏后仍浮在上面";
     [root.view addSubview:title];
 
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btn setTitle:@"启动 PiP 并拉起目标 App" forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont boldSystemFontOfSize:17];
-    [btn setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    btn.frame = CGRectMake(24, 0, root.view.bounds.size.width - 48, 54);
-    btn.center = CGPointMake(root.view.bounds.size.width / 2, root.view.bounds.size.height / 2);
-    btn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
-    btn.layer.cornerRadius = 12;
-    [btn addTarget:self action:@selector(onTap) forControlEvents:UIControlEventTouchUpInside];
-    [root.view addSubview:btn];
+    // 预览框：必须真在屏、真被合成，否则 isPictureInPicturePossible 恒为 NO。
+    // 不要设 masksToBounds —— 裁剪 group 会让 AVSampleBufferDisplayLayer 不上屏。
+    CGFloat pvW = w, pvH = floor(w * 9.0 / 16.0);
+    self.preview = [[UIView alloc] initWithFrame:CGRectMake(pad, CGRectGetMaxY(title.frame) + 8, pvW, pvH)];
+    self.preview.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+    self.preview.layer.borderWidth = 1;
+    self.preview.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
+    [root.view addSubview:self.preview];
 
-    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, 0, root.view.bounds.size.width - 48, 60)];
-    self.statusLabel.center = CGPointMake(root.view.bounds.size.width / 2,
-                                          root.view.bounds.size.height / 2 + 70);
-    self.statusLabel.numberOfLines = 0;
+    UILabel *pvTag = [[UILabel alloc] initWithFrame:CGRectMake(pad + 8, self.preview.frame.origin.y + 6, 280, 15)];
+    pvTag.text = @"PiP 内容源 · 实时预览";
+    pvTag.font = [UIFont systemFontOfSize:10];
+    pvTag.textColor = [UIColor colorWithWhite:1 alpha:0.5];
+    [root.view addSubview:pvTag];
+
+    CGFloat btnH = 46;
+    CGFloat y = CGRectGetMaxY(self.preview.frame) + 12;
+
+    UIButton *b1 = [self button:@"① 启动 PiP 浮窗" tag:1 y:y width:w pad:pad h:btnH];
+    [root.view addSubview:b1];
+    y = CGRectGetMaxY(b1.frame) + 8;
+    UIButton *b2 = [self button:@"② 拉起目标 App" tag:2 y:y width:w pad:pad h:btnH];
+    [root.view addSubview:b2];
+    y = CGRectGetMaxY(b2.frame) + 8;
+    UIButton *b3 = [self button:@"③ 切换 图标 / 菜单" tag:3 y:y width:w pad:pad h:btnH];
+    [root.view addSubview:b3];
+
+    y = CGRectGetMaxY(b3.frame) + 10;
+    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, y, w, 34)];
+    self.statusLabel.numberOfLines = 2;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
-    self.statusLabel.textColor = [UIColor colorWithWhite:1 alpha:0.5];
-    self.statusLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    self.statusLabel.text = @"等待启动";
+    self.statusLabel.textColor = [UIColor colorWithWhite:1 alpha:0.75];
+    self.statusLabel.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    self.statusLabel.text = @"初始化中…";
     [root.view addSubview:self.statusLabel];
+
+    CGFloat logY = CGRectGetMaxY(self.statusLabel.frame) + 6;
+    CGFloat logH = MAX(90, scr.height - logY - 20);
+    self.logView = [[UITextView alloc] initWithFrame:CGRectMake(pad, logY, w, logH)];
+    self.logView.editable = NO;
+    self.logView.backgroundColor = [UIColor colorWithWhite:0.11 alpha:1.0];
+    self.logView.textColor = [UIColor colorWithWhite:0.9 alpha:1.0];
+    self.logView.font = [UIFont monospacedSystemFontOfSize:9.5 weight:UIFontWeightRegular];
+    self.logView.textContainerInset = UIEdgeInsetsMake(6, 6, 6, 6);
+    self.logView.layer.cornerRadius = 6;
+    [root.view addSubview:self.logView];
 
     self.mainWindow.rootViewController = root;
     [self.mainWindow makeKeyAndVisible];
 
-    // PiP 宿主窗口：内容层挂在这里。
-    // 注意：这个 window 必须真的在屏幕内且被合成（alpha=0 或完全离屏会导致
-    // AVSampleBufferDisplayLayer 不上屏，进而 isPictureInPicturePossible 恒为 NO）。
-    // 所以放在屏幕内、层级压在主窗下面、几乎全透明。
-    self.pipHost = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 480, 270)];
-    self.pipHost.windowLevel = UIWindowLevelNormal - 1;
-    self.pipHost.alpha = 0.02;
-    self.pipHost.hidden = NO;
-    self.pipHost.rootViewController = [UIViewController new];
-    self.pipHost.rootViewController.view.backgroundColor = UIColor.clearColor;
-    [self.pipHost makeKeyAndVisible];
-    [self.mainWindow makeKeyAndVisible];
-
-    [[PiPManager shared] attachToWindow:self.pipHost];
-
-    __weak typeof(self) weakSelf = self;
+    __weak typeof(self) ws = self;
+    [PiPManager shared].logHandler = ^(NSString *line) { [ws appendLog:line]; };
     [PiPManager shared].onPiPStarted = ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [weakSelf launchTargetApp];
-        });
+        [ws appendLog:@"浮窗已就绪 → 现在点 ② 拉起目标 App"];
     };
+    [PiPManager shared].onPlayPauseTapped = ^(BOOL playing) {
+        // 浮窗上点了播放/暂停：当作「展开/收起菜单」
+        [ws appendLog:[NSString stringWithFormat:@"浮窗控件事件 playing=%d → 切换画面", playing]];
+        [ws toggleMode];
+    };
+
+    [[PiPManager shared] attachToView:self.preview];
+    [self startFrameTimer];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [ws refreshStatus]; });
     return YES;
 }
 
-- (void)onTap {
-    if ([[PiPManager shared] isPiPActive]) {
-        self.statusLabel.text = @"PiP 已在运行";
-        [self startFrameTimer];
-        return;
-    }
-    self.statusLabel.text = @"正在启动 PiP…";
-    [[PiPManager shared] startPiP];
-    [self startFrameTimer];
+- (UIButton *)button:(NSString *)title tag:(NSInteger)tag y:(CGFloat)y
+               width:(CGFloat)w pad:(CGFloat)pad h:(CGFloat)h {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:title forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    b.frame = CGRectMake(pad, y, w, h);
+    b.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
+    b.layer.cornerRadius = 9;
+    b.tag = tag;
+    [b addTarget:self action:@selector(onButton:) forControlEvents:UIControlEventTouchUpInside];
+    return b;
 }
 
-#pragma mark - 拉起目标 App
+- (void)appendLog:(NSString *)line {
+    NSDateFormatter *f = [NSDateFormatter new];
+    f.dateFormat = @"HH:mm:ss";
+    NSString *s = [NSString stringWithFormat:@"%@  %@", [f stringFromDate:[NSDate date]], line];
+    [self.logLines addObject:s];
+    if (self.logLines.count > 300) [self.logLines removeObjectAtIndex:0];
+    self.logView.text = [self.logLines componentsJoinedByString:@"\n"];
+    if (self.logView.text.length) {
+        [self.logView scrollRangeToVisible:NSMakeRange(self.logView.text.length - 1, 1)];
+    }
+}
+
+- (void)refreshStatus {
+    self.statusLabel.text = [[PiPManager shared] diagnostics];
+}
+
+#pragma mark - 交互
+
+- (void)onButton:(UIButton *)sender {
+    [self keepBackgroundAlive];
+
+    switch (sender.tag) {
+        case 1: {
+            self.statusLabel.text = @"正在启动 PiP…";
+            BOOL sent = [[PiPManager shared] startPiP];
+            self.statusLabel.text = sent ? @"PiP 启动指令已发出"
+                                         : @"未发出，原因见下方日志";
+            break;
+        }
+        case 2:
+            [self launchTargetApp];
+            break;
+        case 3:
+            [self toggleMode];
+            break;
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self refreshStatus]; });
+}
+
+- (void)toggleMode {
+    self.mode = (self.mode == HUDModeIcon) ? HUDModeMenu : HUDModeIcon;
+    [self appendLog:(self.mode == HUDModeIcon) ? @"画面 → 悬浮图标" : @"画面 → HUD 菜单"];
+    [[PiPManager shared] pushImage:[self renderCurrentMode]];
+}
 
 - (void)launchTargetApp {
-    if (self.launched || !kAutoLaunchAfterPiP) return;
-    NSURL *url = [NSURL URLWithString:kLaunchURLString];
-    if (!url) return;
-
-    UIApplication *app = UIApplication.sharedApplication;
-    if (![app canOpenURL:url]) {
-        self.statusLabel.text = [NSString stringWithFormat:@"scheme 未在 Info.plist 白名单：%@", kLaunchURLString];
-        NSLog(@"[PiP] canOpenURL=NO for %@", url);
+    for (NSString *s in kTargetSchemes()) {
+        NSURL *url = [NSURL URLWithString:s];
+        if (!url) continue;
+        if (![UIApplication.sharedApplication canOpenURL:url]) {
+            [self appendLog:[NSString stringWithFormat:@"canOpenURL=NO  %@", s]];
+            continue;
+        }
+        [self appendLog:[NSString stringWithFormat:@"openURL %@", s]];
+        self.statusLabel.text = [NSString stringWithFormat:@"拉起 %@", s];
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:^(BOOL ok) {
+            NSLog(@"[PiP] openURL %@ -> %d", s, ok);
+        }];
         return;
     }
-    self.launched = YES;
-    self.statusLabel.text = [NSString stringWithFormat:@"拉起 %@", kLaunchURLString];
-    [app openURL:url options:@{} completionHandler:^(BOOL ok) {
-        NSLog(@"[PiP] openURL %@ -> %d", url, ok);
+    [self appendLog:@"❌ 所有候选 scheme 都不在白名单 / 未安装"];
+    self.statusLabel.text = @"没有可拉起的 App";
+}
+
+- (void)keepBackgroundAlive {
+    if (self.bgTask > 0) return;
+    __weak typeof(self) ws = self;
+    self.bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+        typeof(self) s = ws;
+        if (s.bgTask > 0) {
+            [[UIApplication sharedApplication] endBackgroundTask:s.bgTask];
+            s.bgTask = 0;
+        }
     }];
 }
 
@@ -132,59 +231,101 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
 - (void)startFrameTimer {
     if (self.timer) return;
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:0.5
-                                                 repeats:YES
-                                                   block:^(NSTimer *t) {
+    self.timer = [NSTimer timerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *t) {
         self.tick++;
-        [[PiPManager shared] pushImage:[self renderHUD]];
+        [[PiPManager shared] pushImage:[self renderCurrentMode]];
     }];
-    // 后台也要跑：加入 common mode，避免被 scroll 等打断
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
 
-/// HUD 画面：顶部一条悬浮控制条 + 状态行。实际项目里换成你的菜单
-- (UIImage *)renderHUD {
+- (UIImage *)renderCurrentMode {
+    return (self.mode == HUDModeIcon) ? [self renderIcon] : [self renderMenu];
+}
+
+/// 悬浮球：深色圆底 + 呼吸绿点 + 标记。PiP 缩到最小后视觉上就是个悬浮图标。
+- (UIImage *)renderIcon {
     CGSize size = CGSizeMake(480, 270);
-    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = 1.0;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGContextRef c = ctx.CGContext;
+        CGContextSetRGBFillColor(c, 0.05, 0.05, 0.06, 1);
+        CGContextFillRect(c, CGRectMake(0, 0, size.width, size.height));
 
+        // 外圈光晕
+        CGContextSetRGBFillColor(c, 0.15, 0.85, 0.55, 0.10);
+        CGContextFillEllipseInRect(c, CGRectMake(240 - 86, 135 - 86, 172, 172));
+        CGContextSetRGBFillColor(c, 0.15, 0.85, 0.55, 0.18);
+        CGContextFillEllipseInRect(c, CGRectMake(240 - 64, 135 - 64, 128, 128));
+
+        // 内圆
+        CGContextSetRGBFillColor(c, 0.11, 0.11, 0.13, 1);
+        CGContextFillEllipseInRect(c, CGRectMake(240 - 52, 135 - 52, 104, 104));
+
+        NSDictionary *ta = @{
+            NSFontAttributeName : [UIFont boldSystemFontOfSize:34],
+            NSForegroundColorAttributeName : UIColor.whiteColor,
+        };
+        CGSize ts = [@"AX" sizeWithAttributes:ta];
+        [@"AX" drawAtPoint:CGPointMake(240 - ts.width / 2, 135 - ts.height / 2) withAttributes:ta];
+
+        // 右上角呼吸点
+        CGFloat phase = (self.tick % 20) / 20.0;
+        CGFloat alpha = 0.35 + 0.55 * fabs(sin(phase * M_PI));
+        CGContextSetRGBFillColor(c, 0.15, 0.85, 0.55, alpha);
+        CGContextFillEllipseInRect(c, CGRectMake(240 + 42, 135 - 58, 18, 18));
+
+        NSDictionary *t3 = @{
+            NSFontAttributeName : [UIFont systemFontOfSize:11],
+            NSForegroundColorAttributeName : [UIColor colorWithWhite:1 alpha:0.3],
+        };
+        [@"点浮窗播放键切换菜单"
+            drawAtPoint:CGPointMake(180, 232) withAttributes:t3];
+    }];
+}
+
+/// HUD 菜单：三个功能项
+- (UIImage *)renderMenu {
+    CGSize size = CGSizeMake(480, 270);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = 1.0;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef c = ctx.CGContext;
         CGContextSetRGBFillColor(c, 0.06, 0.06, 0.07, 1);
         CGContextFillRect(c, CGRectMake(0, 0, size.width, size.height));
 
-        // 顶部控制条
         CGContextSetRGBFillColor(c, 0.12, 0.12, 0.14, 1);
-        CGContextFillRect(c, CGRectMake(0, 0, size.width, 64));
+        CGContextFillRect(c, CGRectMake(0, 0, size.width, 56));
 
-        // 指示点
         CGContextSetRGBFillColor(c, 0.15, 0.85, 0.55, 1);
-        CGContextFillEllipseInRect(c, CGRectMake(20, 20, 24, 24));
+        CGContextFillEllipseInRect(c, CGRectMake(20, 18, 20, 20));
 
         NSDictionary *t1 = @{
-            NSFontAttributeName : [UIFont boldSystemFontOfSize:20],
+            NSFontAttributeName : [UIFont boldSystemFontOfSize:18],
             NSForegroundColorAttributeName : UIColor.whiteColor,
         };
-        [@"AX HUD" drawAtPoint:CGPointMake(58, 18) withAttributes:t1];
+        [@"AX HUD" drawAtPoint:CGPointMake(52, 16) withAttributes:t1];
 
         NSDictionary *t2 = @{
-            NSFontAttributeName : [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular],
+            NSFontAttributeName : [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular],
             NSForegroundColorAttributeName : [UIColor colorWithWhite:1 alpha:0.45],
         };
         [[NSString stringWithFormat:@"tick %ld", (long)self.tick]
-            drawAtPoint:CGPointMake(size.width - 110, 24) withAttributes:t2];
+            drawAtPoint:CGPointMake(size.width - 96, 22) withAttributes:t2];
 
-        // 三个圆角按钮，模拟样本的 HUD 菜单项
         NSArray *items = @[@"功能", @"设置", @"关闭"];
         CGFloat w = (size.width - 4 * 20) / 3.0;
         for (NSUInteger i = 0; i < items.count; i++) {
-            CGRect box = CGRectMake(20 + i * (w + 20), 100, w, 64);
-            UIBezierPath *p = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:14];
+            CGRect box = CGRectMake(20 + i * (w + 20), 96, w, 66);
+            UIBezierPath *p = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:12];
             CGContextSetRGBFillColor(c, 1, 1, 1, 0.10);
             CGContextAddPath(c, p.CGPath);
             CGContextFillPath(c);
 
             NSDictionary *ta = @{
-                NSFontAttributeName : [UIFont systemFontOfSize:17 weight:UIFontWeightMedium],
+                NSFontAttributeName : [UIFont systemFontOfSize:16 weight:UIFontWeightMedium],
                 NSForegroundColorAttributeName : UIColor.whiteColor,
             };
             CGSize ts = [items[i] sizeWithAttributes:ta];
@@ -194,11 +335,11 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
         }
 
         NSDictionary *t3 = @{
-            NSFontAttributeName : [UIFont systemFontOfSize:13],
+            NSFontAttributeName : [UIFont systemFontOfSize:12],
             NSForegroundColorAttributeName : [UIColor colorWithWhite:1 alpha:0.35],
         };
-        [@"PiP 浮窗 · 覆盖在目标 App 之上"
-            drawAtPoint:CGPointMake(20, size.height - 34) withAttributes:t3];
+        [@"再点浮窗播放键收回图标"
+            drawAtPoint:CGPointMake(20, size.height - 28) withAttributes:t3];
     }];
 }
 

@@ -6,16 +6,20 @@
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
-#import <objc/runtime.h>
 
 @interface PiPManager () <AVPictureInPictureControllerDelegate,
                           AVPictureInPictureSampleBufferPlaybackDelegate>
 @property (nonatomic, strong) AVSampleBufferDisplayLayer *displayLayer;
 @property (nonatomic, strong) AVPictureInPictureController *pip;
-@property (nonatomic, strong) UIWindow *hostWindow;
+/// 必须强引用，历史上出现过 controller 不持有 contentSource 就静默失效的情况
+@property (nonatomic, strong) AVPictureInPictureControllerContentSource *contentSource;
+@property (nonatomic, weak) UIView *hostView;
 @property (nonatomic, assign) BOOL playing;
 @property (nonatomic, assign) CMTime pushedTime;
 @property (nonatomic, strong, nullable) AVAudioPlayer *keepAlivePlayer;
+@property (nonatomic, assign) BOOL framePushed;
+@property (nonatomic, assign) BOOL pendingStart;
+@property (nonatomic, assign) BOOL observing;
 @end
 
 @implementation PiPManager
@@ -32,91 +36,196 @@
     return self;
 }
 
+- (void)dealloc {
+    if (self.observing && self.pip) {
+        [self.pip removeObserver:self forKeyPath:@"pictureInPicturePossible"];
+    }
+}
+
+#pragma mark - 日志
+
+- (void)log:(NSString *)fmt, ... {
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSLog(@"[PiP] %@", msg);
+    if (self.logHandler) {
+        self.logHandler(msg);
+    }
+}
+
+#pragma mark - 状态
+
 - (BOOL)isPiPSupported {
-    return [AVPictureInPictureController isPictureInPictureSupported];
+    if (@available(iOS 15.0, *)) {
+        return [AVPictureInPictureController isPictureInPictureSupported];
+    }
+    return NO;
 }
 
 - (BOOL)isPiPActive {
     return self.pip.isPictureInPictureActive;
 }
 
-#pragma mark - 绑定窗口
+- (BOOL)isPiPPossible {
+    return self.pip.isPictureInPicturePossible;
+}
 
-- (void)attachToWindow:(UIWindow *)window {
-    self.hostWindow = window;
+- (NSString *)diagnostics {
+    NSString *status = @"?";
+    switch (self.displayLayer.status) {
+        case AVQueuedSampleBufferRenderingStatusUnknown:   status = @"unknown"; break;
+        case AVQueuedSampleBufferRenderingStatusRendering: status = @"rendering"; break;
+        case AVQueuedSampleBufferRenderingStatusFailed:    status = @"FAILED"; break;
+    }
+    CGSize sz = self.hostView ? self.hostView.bounds.size : CGSizeZero;
+    return [NSString stringWithFormat:
+            @"support=%d pip=%d poss=%d act=%d\nlayer=%@ ready=%d %.0fx%.0f host=%@ err=%@",
+            self.isPiPSupported,
+            self.pip != nil,
+            self.pip.isPictureInPicturePossible,
+            self.pip.isPictureInPictureActive,
+            status,
+            self.displayLayer.isReadyForDisplay,
+            sz.width, sz.height,
+            self.hostView ? @"yes" : @"nil",
+            self.displayLayer.error.localizedDescription ?: @"-"];
+}
+
+#pragma mark - 挂载
+
+- (void)attachToView:(UIView *)view {
+    if (!view) {
+        [self log:@"attach: view 为 nil"];
+        return;
+    }
+    self.hostView = view;
 
     if (!self.displayLayer) {
         self.displayLayer = [AVSampleBufferDisplayLayer layer];
         self.displayLayer.videoGravity = AVLayerVideoGravityResizeAspect;
-        self.displayLayer.frame = window.bounds;
     }
-    CALayer *host = window.layer;
-    if (self.displayLayer.superlayer != host) {
+    self.displayLayer.frame = view.bounds;
+    if (self.displayLayer.superlayer != view.layer) {
         [self.displayLayer removeFromSuperlayer];
-        [host addSublayer:self.displayLayer];
+        [view.layer addSublayer:self.displayLayer];
     }
 
-    if (@available(iOS 15.0, *)) {
-        if (!self.pip && self.isPiPSupported) {
-            AVPictureInPictureControllerContentSource *src =
-                [[AVPictureInPictureControllerContentSource alloc]
-                    initWithSampleBufferDisplayLayer:self.displayLayer
-                                    playbackDelegate:self];
+    [self log:@"attach %.0fx%.0f  support=%d",
+         view.bounds.size.width, view.bounds.size.height, self.isPiPSupported];
 
-            AVPictureInPictureController *pip =
-                [[AVPictureInPictureController alloc] initWithContentSource:src];
-            pip.delegate = self;
-            pip.canStartPictureInPictureAutomaticallyFromInline = YES;
-            self.pip = pip;
-        }
+    [self setupController];
+
+    // 立刻推一帧：layer 只有拿到样本才会进 rendering，possible 才可能变 YES
+    [self pushPlaceholderIfNeeded];
+}
+
+- (void)setupController {
+    if (self.pip) return;
+    if (!self.isPiPSupported) {
+        [self log:@"❌ 本机不支持 PiP（isPictureInPictureSupported=NO）"];
+        return;
+    }
+    if (!self.displayLayer) {
+        [self log:@"❌ displayLayer 未创建"];
+        return;
+    }
+    if (@available(iOS 15.0, *)) {
+        self.contentSource =
+            [[AVPictureInPictureControllerContentSource alloc]
+                initWithSampleBufferDisplayLayer:self.displayLayer
+                                playbackDelegate:self];
+        AVPictureInPictureController *pip =
+            [[AVPictureInPictureController alloc] initWithContentSource:self.contentSource];
+        pip.delegate = self;
+        pip.canStartPictureInPictureAutomaticallyFromInline = NO;
+        self.pip = pip;
+
+        [pip addObserver:self
+              forKeyPath:@"pictureInPicturePossible"
+                 options:NSKeyValueObservingOptionNew
+                 context:NULL];
+        self.observing = YES;
+        [self log:@"controller 已创建，开始监听 possible"];
+    }
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary *)change
+                       context:(void *)context {
+    if (![keyPath isEqualToString:@"pictureInPicturePossible"]) return;
+    BOOL now = [change[NSKeyValueChangeNewKey] boolValue];
+    [self log:@"possible → %d%@", now, now ? @"" : @"（需 layer 完成首帧渲染）"];
+
+    if (now && self.pendingStart && !self.pip.isPictureInPictureActive) {
+        self.pendingStart = NO;
+        [self log:@"排队中的启动请求现在执行"];
+        [self.pip startPictureInPicture];
     }
 }
 
 #pragma mark - 控制
 
-- (void)startPiP {
-    // PiP 必须有活跃的 playback 音频会话，否则启动会失败
+- (BOOL)startPiP {
+    [self setupController];
+
+    if (!self.pip) {
+        [self log:@"❌ 无法启动：controller 不存在（不支持或未 attach）"];
+        return NO;
+    }
+    if (self.pip.isPictureInPictureActive) {
+        [self log:@"已经在 PiP 中"];
+        return NO;
+    }
+
     NSError *err = nil;
     AVAudioSession *s = [AVAudioSession sharedInstance];
-    [s setCategory:AVAudioSessionCategoryPlayback error:&err];
-    [s setActive:YES error:&err];
-    if (err) NSLog(@"[PiP] audio session: %@", err);
+    if (![s setCategory:AVAudioSessionCategoryPlayback
+                   mode:AVAudioSessionModeMoviePlayback
+                options:0
+                  error:&err]) {
+        [self log:@"⚠️ setCategory 失败: %@", err.localizedDescription];
+    }
+    err = nil;
+    if (![s setActive:YES error:&err]) {
+        [self log:@"⚠️ setActive 失败: %@", err.localizedDescription];
+    }
+    [self log:@"audio session: cat=%@ active=%d",
+         s.category, s.isOtherAudioPlaying ? 0 : 1];
 
     [self startKeepAlive];
 
     self.playing = YES;
-    self.pushedTime = kCMTimeZero;
+    [self pushPlaceholderIfNeeded];
 
-    if (!self.pip) {
-        NSLog(@"[PiP] not attached / unsupported");
-        return;
-    }
-    if (self.pip.isPictureInPictureActive) return;
+    [self log:@"start: possible=%d ready=%d status=%@",
+         self.pip.isPictureInPicturePossible,
+         self.displayLayer.isReadyForDisplay,
+         (self.displayLayer.status == AVQueuedSampleBufferRenderingStatusRendering) ? @"rendering" : @"not-rendering"];
 
     if (self.pip.isPictureInPicturePossible) {
         [self.pip startPictureInPicture];
-    } else {
-        // 首次往往还没 possible，延时重试
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (self.pip.isPictureInPicturePossible) {
-                [self.pip startPictureInPicture];
-            } else {
-                NSLog(@"[PiP] still not possible");
-            }
-        });
+        [self log:@"→ startPictureInPicture 已调用"];
+        return YES;
     }
+
+    self.pendingStart = YES;
+    [self log:@"⏳ possible 还没就绪，已排队；一旦变 YES 立即启动"];
+    return NO;
 }
 
 - (void)stopPiP {
     self.playing = NO;
+    self.pendingStart = NO;
     if (self.pip.isPictureInPictureActive) {
         [self.pip stopPictureInPicture];
     }
     [self stopKeepAlive];
 }
 
-#pragma mark - 静音保活（切到目标 App 后进程继续跑）
+#pragma mark - 静音保活
 
 - (void)startKeepAlive {
     if (!self.keepAliveEnabled || self.keepAlivePlayer.isPlaying) return;
@@ -124,14 +233,12 @@
     if (!wav) return;
     NSError *e = nil;
     AVAudioPlayer *p = [[AVAudioPlayer alloc] initWithData:wav error:&e];
-    if (e || !p) { NSLog(@"[PiP] keepalive: %@", e); return; }
+    if (e || !p) { [self log:@"keepalive 失败: %@", e.localizedDescription]; return; }
     p.numberOfLoops = -1;
-    // 不要把 volume 设 0：系统可能判定为「未在输出音频」而不给后台时间。
-    // 静音来自采样数据本身（全零 PCM），volume 保持默认即可。
     [p prepareToPlay];
     [p play];
     self.keepAlivePlayer = p;
-    NSLog(@"[PiP] keepalive started");
+    [self log:@"keepalive 已启动（2s 静音循环）"];
 }
 
 - (void)stopKeepAlive {
@@ -139,7 +246,8 @@
     self.keepAlivePlayer = nil;
 }
 
-/// 内存里拼一段静音 WAV（16-bit mono 8kHz），不依赖资源文件
+/// 内存里拼一段 WAV（16-bit mono 8kHz）。
+/// 采样值取 ±1 而不是全 0：全零会被某些版本判定为「未在输出音频」而克扣后台时间。
 - (NSData *)silentWAVDataWithSeconds:(NSUInteger)sec {
     const uint32_t rate = 8000;
     uint32_t frames = (uint32_t)(rate * sec);
@@ -155,13 +263,41 @@
     put32(16); put16(1); put16(1); put32(rate); put32(rate * 2); put16(2); put16(16);
     [d appendBytes:"data" length:4];
     put32(dataBytes);
-    [d appendData:[NSMutableData dataWithLength:dataBytes]];   // 全零 = 静音
+
+    NSMutableData *pcm = [NSMutableData dataWithLength:dataBytes];
+    int16_t *s = (int16_t *)pcm.mutableBytes;
+    for (uint32_t i = 0; i < frames; i++) {
+        s[i] = (i & 1) ? 1 : -1;   // ±1 LSB，人耳不可闻
+    }
+    [d appendData:pcm];
     return d;
 }
 
 #pragma mark - 推帧
 
+/// 首帧占位：layer 没有样本时 possible 恒为 NO，这里先塞一帧纯色
+- (void)pushPlaceholderIfNeeded {
+    if (self.framePushed || !self.displayLayer) return;
+    self.framePushed = YES;
+    CGSize sz = CGSizeMake(480, 270);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = 1.0;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:sz format:fmt];
+    UIImage *img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextSetRGBFillColor(ctx.CGContext, 0.08, 0.08, 0.09, 1);
+        CGContextFillRect(ctx.CGContext, CGRectMake(0, 0, sz.width, sz.height));
+    }];
+    [self pushImage:img];
+    [self log:@"已推送占位首帧 %.0fx%.0f", sz.width, sz.height];
+    // 首帧之后补一帧，部分机型要两帧才 ready
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self pushImage:img];
+    });
+}
+
 - (void)pushImage:(UIImage *)image {
+    if (!image) return;
     CVPixelBufferRef pb = [self pixelBufferFromImage:image];
     if (pb) {
         [self pushPixelBuffer:pb];
@@ -192,6 +328,7 @@
     if (st != noErr || !sbuf) return;
 
     if (self.displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+        [self log:@"layer 进入 failed，flush 后重试"];
         [self.displayLayer flush];
     }
     [self.displayLayer enqueueSampleBuffer:sbuf];
@@ -237,27 +374,40 @@
 
 #pragma mark - AVPictureInPictureControllerDelegate
 
+- (void)pictureInPictureControllerWillStartPictureInPicture:(AVPictureInPictureController *)c {
+    [self log:@"will start"];
+}
+
 - (void)pictureInPictureControllerDidStartPictureInPicture:(AVPictureInPictureController *)c {
-    NSLog(@"[PiP] started");
+    [self log:@"✅ PiP 已启动"];
     if (self.onPiPStarted) self.onPiPStarted();
 }
-- (void)pictureInPictureControllerDidStopPictureInPicture:(AVPictureInPictureController *)c {
-    NSLog(@"[PiP] stopped");
-}
+
 - (void)pictureInPictureController:(AVPictureInPictureController *)c
-failedToStartPictureInPictureWithError:(NSError *)error {
-    NSLog(@"[PiP] failed: %@", error);
+        failedToStartPictureInPictureWithError:(NSError *)error {
+    [self log:@"❌ PiP 启动失败: %@ (%ld)", error.localizedDescription, (long)error.code];
+}
+
+- (void)pictureInPictureControllerDidStopPictureInPicture:(AVPictureInPictureController *)c {
+    [self log:@"PiP 已停止"];
+}
+
+- (void)pictureInPictureController:(AVPictureInPictureController *)c
+restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:(void (^)(BOOL))completionHandler {
+    completionHandler(YES);
 }
 
 #pragma mark - 必须实现的播放代理（否则无法进入 PiP）
 
 - (void)pictureInPictureController:(AVPictureInPictureController *)c
-                     setPlaying:(BOOL)playing {
+                       setPlaying:(BOOL)playing {
     self.playing = playing;
+    // 浮窗内点播放/暂停 —— 唯一能回传到本进程的浮窗手势
+    if (self.onPlayPauseTapped) self.onPlayPauseTapped(playing);
 }
 
 - (CMTimeRange)pictureInPictureControllerTimeRangeForPlayback:(AVPictureInPictureController *)c {
-    // 给一个无限时长的直播区间，PiP 才不会因为"播完"自动退出
+    // 无限时长，PiP 才不会因为「播完」自动退出
     return CMTimeRangeMake(kCMTimeZero, kCMTimePositiveInfinity);
 }
 
@@ -266,7 +416,7 @@ failedToStartPictureInPictureWithError:(NSError *)error {
 }
 
 - (void)pictureInPictureController:(AVPictureInPictureController *)c
-              didTransitionToRenderSize:(CMVideoDimensions)newRenderSize {
+             didTransitionToRenderSize:(CMVideoDimensions)newRenderSize {
 }
 
 - (void)pictureInPictureController:(AVPictureInPictureController *)c
