@@ -22,7 +22,7 @@ static NSString *const kLaunchURLString = @"music://";
 static BOOL const kAutoLaunchAfterPiP = YES;
 
 @interface AppDelegate ()
-@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) UIWindow *mainWindow;
 @property (nonatomic, strong) UIWindow *pipHost;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, assign) NSInteger tick;
@@ -35,7 +35,7 @@ static BOOL const kAutoLaunchAfterPiP = YES;
 - (BOOL)application:(UIApplication *)app
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
-    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    self.mainWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
 
     UIViewController *root = [UIViewController new];
     root.view.backgroundColor = [UIColor colorWithWhite:0.09 alpha:1.0];
@@ -69,8 +69,8 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.statusLabel.text = @"等待启动";
     [root.view addSubview:self.statusLabel];
 
-    self.window.rootViewController = root;
-    [self.window makeKeyAndVisible];
+    self.mainWindow.rootViewController = root;
+    [self.mainWindow makeKeyAndVisible];
 
     // PiP 宿主窗口：内容层挂在这里。
     // 注意：这个 window 必须真的在屏幕内且被合成（alpha=0 或完全离屏会导致
@@ -83,7 +83,7 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.pipHost.rootViewController = [UIViewController new];
     self.pipHost.rootViewController.view.backgroundColor = UIColor.clearColor;
     [self.pipHost makeKeyAndVisible];
-    [self.window makeKeyAndVisible];
+    [self.mainWindow makeKeyAndVisible];
 
     [[PiPManager shared] attachToWindow:self.pipHost];
 
