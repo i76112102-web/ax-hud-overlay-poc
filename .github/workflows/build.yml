@@ -1,0 +1,66 @@
+name: build-ipa
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          echo "clang: $(xcrun --sdk iphoneos -f clang)"
+
+      - name: Normalize scripts
+        run: |
+          sed -i '' 's/\r$//' scripts/build.sh
+          chmod +x scripts/build.sh
+
+      - name: Build unsigned IPA
+        run: bash scripts/build.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-unsigned-${{ github.run_number }}
+          path: |
+            build/*.ipa
+            build/SHA256SUMS.txt
+            build/build-info.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="build-${GITHUB_RUN_NUMBER}"
+          fi
+          NOTES="$(cat build/build-info.txt)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/*.ipa build/SHA256SUMS.txt build/build-info.txt --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "$NOTES" \
+              build/*.ipa build/SHA256SUMS.txt build/build-info.txt
+          fi
+          echo "release: $TAG"
