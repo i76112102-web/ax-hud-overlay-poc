@@ -152,6 +152,14 @@ static const CGFloat kThemeH   = 186.0;
     pan.delegate = self;
     [self.fab addGestureRecognizer:pan];
 
+    // 点击展开/收起。只挂 pan 是不够的：UIPan 在手指不移动直接抬起时
+    // 会直接 fail，永远走不到 Ended，菜单就打不开。
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                         action:@selector(onFabTap:)];
+    tap.numberOfTapsRequired = 1;
+    [tap requireGestureRecognizerToFail:pan];   // 拖动时不误触展开
+    [self.fab addGestureRecognizer:tap];
+
     [self addSubview:self.fab];
 }
 
@@ -367,12 +375,12 @@ static const CGFloat kThemeH   = 186.0;
         }
     } else if (g.state == UIGestureRecognizerStateEnded ||
                g.state == UIGestureRecognizerStateCancelled) {
-        if (!self.dragging) {
-            [self toggleExpand];
-        } else {
-            [self snapToEdge];
-        }
+        if (self.dragging) [self snapToEdge];
     }
+}
+
+- (void)onFabTap:(UITapGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateEnded) [self toggleExpand];
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g

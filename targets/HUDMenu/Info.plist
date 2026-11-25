@@ -43,7 +43,11 @@
     <key>LSApplicationQueriesSchemes</key>
     <array>
         <string>sgame</string>
+        <string>tencentmobliegame</string>
         <string>tencentgame</string>
+        <string>tmgp</string>
+        <string>cfm</string>
+        <string>qqgame</string>
         <string>music</string>
     </array>
 </dict>
