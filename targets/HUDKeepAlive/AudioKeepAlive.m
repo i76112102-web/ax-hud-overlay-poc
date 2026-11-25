@@ -50,7 +50,7 @@ static NSData *SilentWavData(void) {
     w16(bits);
     [d appendBytes:"data" length:4];
     w32(dataSize);
-    [d appendBytes:[NSMutableData dataWithLength:dataSize] length:dataSize];  // 全 0 = 静音
+    [d appendData:[NSMutableData dataWithLength:dataSize]];  // 全 0 = 静音
     return d;
 }
 
