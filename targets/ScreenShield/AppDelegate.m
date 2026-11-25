@@ -7,7 +7,7 @@
 #import "AXScreenShield.h"
 
 @interface AppDelegate ()
-@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) UIWindow *mainWindow;
 @property (nonatomic, strong) AXScreenShield *shield;
 @property (nonatomic, strong) UILabel *stateLabel;
 @end
@@ -22,12 +22,12 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
             scene = (UIWindowScene *)s; break;
         }
     }
-    self.window = scene ? [[UIWindow alloc] initWithWindowScene:scene]
+    self.mainWindow = scene ? [[UIWindow alloc] initWithWindowScene:scene]
                         : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [UIViewController new];
-    [self.window makeKeyAndVisible];
+    self.mainWindow.rootViewController = [UIViewController new];
+    [self.mainWindow makeKeyAndVisible];
 
-    UIView *root = self.window.rootViewController.view;
+    UIView *root = self.mainWindow.rootViewController.view;
     root.backgroundColor = [UIColor colorWithRed:0.98 green:0.42 blue:0.18 alpha:1.0];
 
     UILabel *big = [[UILabel alloc] initWithFrame:CGRectInset(root.bounds, 24, 180)];
