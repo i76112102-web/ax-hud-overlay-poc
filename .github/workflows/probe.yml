@@ -6,7 +6,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo ok && uname -a
-  mac:
+  m13:
+    runs-on: macos-13
+    steps:
+      - run: sw_vers
+  m14:
     runs-on: macos-14
     steps:
-      - run: echo ok && xcodebuild -version
+      - run: sw_vers
+  m15:
+    runs-on: macos-15
+    steps:
+      - run: sw_vers
+  mlatest:
+    runs-on: macos-latest
+    steps:
+      - run: sw_vers
