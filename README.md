@@ -10,13 +10,14 @@ CI 直接产出**未签名 IPA**，下载后自签即可装到非越狱设备。
 
 | IPA | Bundle ID | 用途 | 免越狱可用 |
 |---|---|---|---|
+| `HUDMenu.ipa` | `local.poc.hudmenu` | **点「启动应用」之后的 HUD 交互层**：浮球 + 展开菜单 + 过直播 + 防截屏 + 主题设置 | ✅ 本进程内可见 |
 | `PiPOverlay.ipa` | `local.poc.pipoverlay` | 画中画浮窗：拉起目标 App 后 HUD 仍显示在它界面上 | ✅ 唯一官方跨 App 路径 |
 | `HUDKeepAlive.ipa` | `local.poc.hudkeepalive` | 最高层 window + 静音音频保活 + 私有 UITouch 投递 | 仅覆盖本进程（对应样本容器化方案） |
 | `ScreenShield.ipa` | `local.poc.screenshield` | 复现样本的防截屏护盾（secure text entry） | ✅ 装完截图即黑 |
 
 下载地址二选一：
 
-- **Releases**：<https://github.com/i76112102-web/ax-hud-overlay-poc/releases/tag/v1.0.0>
+- **Releases**：<https://github.com/i76112102-web/ax-hud-overlay-poc/releases/tag/v1.0.2>
 - **Actions → 对应 run → Artifacts → `ipa-unsigned-<n>`**
 
 已构建验证（2026-11-25T19:56Z）：
@@ -65,7 +66,27 @@ codesign -f -s "iPhone Developer: Your Name (TEAMID)" \
 
 ---
 
-## 三、PiPOverlay 验证清单
+## 三、HUDMenu 验证清单（主路径）
+
+样本的主要功能全在「启动应用」按钮之后 —— 一个浮球加一个菜单。这一节验证的就是那层。
+
+1. 启动 → 点「启动 HUD」→ 右上角出现 56pt 圆形浮球（默认蓝色，标 `AX`）
+2. 拖动浮球 → 松手自动吸附到最近一侧边缘
+3. 点浮球 → 展开菜单卡片，四项：
+   - **过直播** 副标题 `关` / `开`
+   - **防截屏** 副标题 `允许截屏` / `防截屏已开启`
+   - **主题设置** 点开出现色相 / 饱和度 / 亮度三条滑杆 + `恢复默认蓝色`
+   - **退出HUD**
+4. 开「过直播」→ 下拉控制中心点录屏 → 浮球与菜单立刻消失；停止录屏后自动回来
+5. 开「防截屏」→ 截图 → HUD 区域变黑，宿主界面正常（说明只挡了 HUD 那层窗口）
+6. 拖色相滑杆 → 浮球和「启动 HUD」按钮实时变色
+7. 转成横屏 / 从别的 App 切回来 → HUD 保持在屏内，不会跑到屏幕外
+
+对应样本的 7 项实现见 `_re/REPORT.md` 第 7 节。
+
+---
+
+## 四、PiPOverlay 验证清单
 
 1. 启动 App，界面显示「拉起目标 App 后 HUD 仍浮在它上面」
 2. 点按钮 → 顶部出现系统画中画小窗，画面是自绘 HUD（`tick` 在涨）
@@ -100,7 +121,7 @@ static BOOL const kAutoLaunchAfterPiP = YES;
 
 ---
 
-## 四、HUDKeepAlive 验证清单
+## 五、HUDKeepAlive 验证清单
 
 1. 启动 → 屏幕出现绿色浮球（`windowLevel = 10000000`）
 2. 浮球可拖动；拖动时下层界面照常响应（`hitTest` 空白区返回 `nil` 实现穿透）
@@ -111,7 +132,7 @@ static BOOL const kAutoLaunchAfterPiP = YES;
 
 ---
 
-## 五、ScreenShield 验证清单
+## 六、ScreenShield 验证清单
 
 1. 启动 → 橙色界面，中间写「SCREENSHOT ME」
 2. 截图 → 相册里得到整屏深色，状态栏和 Home 条正常（说明截图通道没坏，是 App 层像素被剔除）
@@ -122,7 +143,7 @@ static BOOL const kAutoLaunchAfterPiP = YES;
 
 ---
 
-## 六、本地复现构建
+## 七、本地复现构建
 
 要求 macOS + Xcode Command Line Tools（不需要完整 Xcode 工程）。
 
@@ -159,14 +180,15 @@ build/build-info.txt
 
 ---
 
-## 七、代码结构
+## 八、代码结构
 
 ```
 .
-├── .github/workflows/build.yml   # macos-14，构建 + artifact + release
-├── common/main.m                 # UIApplicationMain 入口（三 target 共用）
+├── .github/workflows/build.yml   # macos-15，构建 + artifact + release
+├── common/main.m                 # UIApplicationMain 入口（各 target 共用）
 ├── scripts/build.sh              # clang 交叉编译 + 打 IPA + 校验
 └── targets/
+    ├── HUDMenu/                  # HUDMenuWindow + HUDMenuPanel + AudioKeepAlive（主路径）
     ├── PiPOverlay/               # PiPManager + AppDelegate
     ├── HUDKeepAlive/             # HUDWindow + AudioKeepAlive + TouchInjector
     └── ScreenShield/             # AXScreenShield + AppDelegate
@@ -174,10 +196,16 @@ build/build-info.txt
 
 ---
 
-## 八、与样本的对应关系
+## 九、与样本的对应关系
 
 | 样本组件 | 证据 | 本仓库对应 |
 |---|---|---|
+| `mjh763hgxc`（HUD 窗口，37 方法） | `_isWindowServerHostingManaged` / `_isSecure` / `_shouldCreateContextAsSecure` / `_canBecomeKeyWindow` / `_ignoresHitTest` 六个私有 override | `HUDMenuWindow.m` |
+| `hudApplyCompactGeometry` / `hudApplyFullScreenGeometry` | 0x100AEAD5C / 0x100AE9F24，锚点 + 两套几何 | `HUDMenuPanel` 的 `fab` / `card` 两态 |
+| `xp7n3bq5km:frame:title:subTitle:key:tagIndex:` | 0x100A7D248，圆角 + 双 label + tap + tag | `HUDMenuRow` |
+| `AX.HUD.CaptureToggle` / `AX.Capture.NativeLayerPending` | `__AXTEXT.__cstring` 明文 key | 防截屏 / 过直播两个开关 |
+| `过直播-开/关`、`防截屏已开启`、`允许截屏`、`主题设置`、`恢复默认蓝色` | `__AXTEXT.__ustring` 0x1011333A8（UTF-16LE） | 菜单四项文案 |
+| `scheduleOrientationSynchronizationAfterAppSwitch` | 0x100AAC094，`dispatch_async(main)` → `synchronizeActiveOrientation` | `onAppActive` → `syncGeometry` |
 | `AXHUDCoreAnimationRenderer` / `AXHUDReusableLayerPool` | 类名与 `menuWindowLevel` 常量 | `HUDWindow` 的 CG 自绘 |
 | `Library/ax-hud-keepalive.wav` | 设备容器内实测存在 | `AudioKeepAlive` 内存生成静音 WAV |
 | `_addTouch:forDelayedDelivery:` / `_touchesEvent` | 方法名 + selref | `TouchInjector` |
@@ -189,7 +217,7 @@ build/build-info.txt
 
 ---
 
-## 九、已知限制
+## 十、已知限制
 
 - 未签名 IPA：必须自签，7 天（免费证书）或证书有效期（付费/企业）
 - PiP 小窗尺寸由系统决定，不能自由拉伸成任意菜单形态
