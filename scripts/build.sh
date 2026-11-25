@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build"
 MIN_IOS="${MIN_IOS:-15.0}"
-TARGETS="${TARGETS:-PiPOverlay HUDKeepAlive ScreenShield}"
+TARGETS="${TARGETS:-PiPOverlay HUDKeepAlive ScreenShield HUDMenu}"
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 CLANG="$(xcrun --sdk iphoneos -f clang)"
