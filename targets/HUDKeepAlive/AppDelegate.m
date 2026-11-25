@@ -9,7 +9,7 @@
 #import "TouchInjector.h"
 
 @interface AppDelegate ()
-@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) UIWindow *mainWindow;
 @property (nonatomic, strong) HUDWindow *hud;
 @end
 
@@ -18,11 +18,11 @@
 - (BOOL)application:(UIApplication *)app
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.mainWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     UIViewController *root = [UIViewController new];
     root.view.backgroundColor = [UIColor colorWithWhite:0.09 alpha:1];
-    self.window.rootViewController = root;
-    [self.window makeKeyAndVisible];
+    self.mainWindow.rootViewController = root;
+    [self.mainWindow makeKeyAndVisible];
 
     // 1. 保活
     [[AudioKeepAlive shared] start];
@@ -32,7 +32,7 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     __weak typeof(self) weakSelf = self;
     self.hud.onTap = ^{
         // 演示：点击浮球 → 向"虚拟 App 的视图"投递一次点击
-        UIWindow *under = weakSelf.window;
+        UIWindow *under = weakSelf.mainWindow;
         [TouchInjector tapAt:CGPointMake(160, 300)
                        inView:under.rootViewController.view
                        window:under];
