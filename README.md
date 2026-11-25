@@ -16,8 +16,24 @@ CI 直接产出**未签名 IPA**，下载后自签即可装到非越狱设备。
 
 下载地址二选一：
 
-- **Releases**：`https://github.com/<owner>/<repo>/releases` —— 手动触发或打 tag 时自动发布
+- **Releases**：<https://github.com/i76112102-web/ax-hud-overlay-poc/releases/tag/v1.0.0>
 - **Actions → 对应 run → Artifacts → `ipa-unsigned-<n>`**
+
+已构建验证（2026-11-25T19:56Z）：
+
+| 项 | 值 |
+|---|---|
+| Runner | `macos-15` / Darwin arm64 |
+| Xcode | 16.4 (16F6) |
+| iPhoneOS SDK | 18.5 |
+| clang | Apple clang 17.0.0 |
+| 产物 | 三个 IPA，arm64 / MH_EXECUTE / platform=iOS / minos 15.0.0 |
+
+```
+c285be74...  HUDKeepAlive.ipa
+0c7b09a3...  PiPOverlay.ipa
+47e72848...  ScreenShield.ipa
+```
 
 每个包都带 `SHA256SUMS.txt` 和 `build-info.txt`（Xcode 版本、SDK、clang 版本、UTC 时间戳）。
 
@@ -133,6 +149,13 @@ build/build-info.txt
 ```
 
 构建脚本自带两道校验：`file` 必须是 `Mach-O 64-bit executable arm64`，`otool -l` 必须有 `LC_BUILD_VERSION`（确认 platform 是 iOS 而不是 macOS）。
+
+### CI 说明
+
+- runner 必须用 `macos-15`。`macos-14` 已被 GitHub 退役，job 提交后 1 秒内 `cancelled`，且**不产生任何日志**（logs 返回空 zip），容易误判成账号被限制。
+- workflow 走 `push` 到 `main` 和 `workflow_dispatch` 两种触发；`workflow_dispatch` 会额外把产物发到 Release。
+- 仓库根目录的 `upload.py` / `release.py` 是维护用脚本（Contents API / Releases API），构建本身不依赖它们。
+
 
 ---
 
