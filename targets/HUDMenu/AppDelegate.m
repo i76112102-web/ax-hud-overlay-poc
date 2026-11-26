@@ -28,20 +28,17 @@
 
 static NSString *const kTargetBID  = @"ax.target.bundleID";
 static NSString *const kTargetName = @"ax.target.name";
-static NSString *const kAutoLaunch = @"ax.autoLaunch";
 
 @interface AppDelegate ()
 @property (nonatomic, strong) UIButton *targetButton;
 @property (nonatomic, strong) UIButton *launchButton;
 @property (nonatomic, strong) UIButton *hudButton;
 @property (nonatomic, strong) UILabel  *hintLabel;
-@property (nonatomic, strong) UISwitch *autoSwitch;
-@property (nonatomic, assign) BOOL autoLaunchFired;
 
 @property (nonatomic, strong) HUDMenuWindow *hudWindow;
 @property (nonatomic, strong) HUDMenuPanel  *panel;
 
-- (void)autoDetectTargetWithCompletion:(void (^)(void))completion;
+- (void)autoDetectTarget;
 @end
 
 @implementation AppDelegate
@@ -65,16 +62,12 @@ static NSString *const kAutoLaunch = @"ax.autoLaunch";
                                                  name:UIApplicationDidBecomeActiveNotification
                                                object:nil];
 
-    __weak typeof(self) ws = self;
-    [self autoDetectTargetWithCompletion:^{
-        __strong typeof(ws) s = ws;
-        if (!s || s.autoLaunchFired || !s.autoSwitch.on) return;
-        s.autoLaunchFired = YES;    // 只在冷启动拉一次，回前台不再拉
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [s onLaunchTarget];
-        });
-    }];
+    // 拉起只由「启动应用」按钮触发，冷启动不做任何自动拉起。
+    // 旧版本存过的自动拉起开关连同 key 一起清掉，避免残留配置影响行为。
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"ax.autoLaunch"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+    [self autoDetectTarget];
     return YES;
 }
 
@@ -136,21 +129,7 @@ static NSString *const kAutoLaunch = @"ax.autoLaunch";
              forControlEvents:UIControlEventTouchUpInside];
     [root addSubview:self.hudButton];
 
-    // ---- 自动拉起开关（默认开，对齐原样本「打开就起王者」的行为） ----
-    self.autoSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(pad, 424, 51, 31)];
-    id savedAuto = [[NSUserDefaults standardUserDefaults] objectForKey:kAutoLaunch];
-    self.autoSwitch.on = savedAuto ? [savedAuto boolValue] : YES;
-    [self.autoSwitch addTarget:self action:@selector(onAutoChanged)
-              forControlEvents:UIControlEventValueChanged];
-    [root addSubview:self.autoSwitch];
-
-    UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad + 60, 424, w - 60, 31)];
-    autoLabel.text = @"打开即自动拉起目标";
-    autoLabel.font = [UIFont systemFontOfSize:13];
-    autoLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.6];
-    [root addSubview:autoLabel];
-
-    self.hintLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, 470, w, 120)];
+    self.hintLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, 386, w, 160)];
     self.hintLabel.numberOfLines = 0;
     self.hintLabel.font = [UIFont systemFontOfSize:12];
     self.hintLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.4];
@@ -158,11 +137,6 @@ static NSString *const kAutoLaunch = @"ax.autoLaunch";
     [root addSubview:self.hintLabel];
 
     [self refreshTargetButton];
-}
-
-- (void)onAutoChanged {
-    [[NSUserDefaults standardUserDefaults] setBool:self.autoSwitch.on forKey:kAutoLaunch];
-    [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
 - (void)refreshTargetButton {
@@ -198,7 +172,7 @@ static NSString *const kAutoLaunch = @"ax.autoLaunch";
 
 /// 首次启动自动挑目标。原样本就是对着王者荣耀（iOS: com.tencent.smoba）用的，
 /// 这里把它放在候选第一位；枚举不到已装 App 时也直接落王者。
-- (void)autoDetectTargetWithCompletion:(void (^)(void))completion {
+- (void)autoDetectTarget {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
 
     // v1.0.3 里把王者荣耀写成了安卓包名 com.tencent.tmgp.sgame，iOS 上不存在，迁移掉
@@ -209,10 +183,7 @@ static NSString *const kAutoLaunch = @"ax.autoLaunch";
         [self refreshTargetButton];
     }
 
-    if ([ud stringForKey:kTargetBID].length) {
-        if (completion) completion();
-        return;
-    }
+    if ([ud stringForKey:kTargetBID].length) return;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSArray<AXAppInfo *> *apps = [Launcher installedApps];
@@ -251,9 +222,8 @@ static NSString *const kAutoLaunch = @"ax.autoLaunch";
             [[NSUserDefaults standardUserDefaults] synchronize];
             [self refreshTargetButton];
             self.hintLabel.text = fallback
-                ? [NSString stringWithFormat:@"默认目标：%@（未枚举到列表，走内置 scheme）", hit.name]
-                : [NSString stringWithFormat:@"已自动识别：%@", hit.name];
-            if (completion) completion();
+                ? [NSString stringWithFormat:@"默认目标：%@（未枚举到列表，走内置 scheme）\n点「启动应用」拉起。", hit.name]
+                : [NSString stringWithFormat:@"已自动识别：%@\n点「启动应用」拉起。", hit.name];
         });
     });
 }
