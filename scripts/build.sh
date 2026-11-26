@@ -56,7 +56,7 @@ for T in $TARGETS; do
       -O2 -DNDEBUG \
       -Wall -Wno-unused-variable -Wno-deprecated-declarations \
       -I "$SRC" \
-      -framework Foundation -framework UIKit -framework QuartzCore \
+      -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics \
       "$SRC/$T.m" \
       -o "$OUT/tweaks/$T.dylib"
     file "$OUT/tweaks/$T.dylib"
