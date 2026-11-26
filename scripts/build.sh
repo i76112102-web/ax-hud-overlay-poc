@@ -28,6 +28,11 @@ echo "SDK: $SDK"
 echo "min iOS: $MIN_IOS"
 echo
 
+# ---- DIAG: dump available PiP content source initializers ----
+echo "== PiP ContentSource API =="
+grep -n -A2 'initWith' "$SDK/System/Library/Frameworks/AVKit.framework/Headers/AVPictureInPictureController.h" | head -60 || true
+echo
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
