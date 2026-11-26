@@ -17,6 +17,7 @@
 @property (nonatomic, strong) AVPictureInPictureVideoCallViewController *videoCallVC;
 @property (nonatomic, weak) UIView *hostView;
 @property (nonatomic, strong) UIView *iconContentView;   // icon 模式下 VC.view 里的内容容器
+@property (nonatomic, strong) UIView *iconSourceView;    // icon 模式下 84x84 sourceView
 @property (nonatomic, assign) BOOL hudExpanded;         // HUD 是否展开
 @property (nonatomic, assign) BOOL playing;
 @property (nonatomic, assign) CMTime pushedTime;
@@ -104,7 +105,9 @@
     [self.iconContentView removeFromSuperview];
     self.iconContentView = nil;
 
-    CGSize s = self.hudExpanded ? CGSizeMake(160, 120) : CGSizeMake(84, 84);
+    // 用 host 的真实 bounds（video-call 容器实际尺寸可能远大于 preferredContentSize）
+    CGSize s = host.bounds.size;
+    if (s.width < 1 || s.height < 1) s = self.hudExpanded ? CGSizeMake(160, 120) : CGSizeMake(84, 84);
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, s.height)];
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     box.backgroundColor = UIColor.clearColor;
@@ -113,8 +116,11 @@
 
     if (!self.hudExpanded) {
         // ---- 收起态：单个圆标铺满容器 ----
-        CGFloat d = MIN(box.bounds.size.width, box.bounds.size.height);
-        UIView *ball = [[UIView alloc] initWithFrame:CGRectMake(0, 0, d, d)];
+        CGFloat d = MIN(box.bounds.size.width, box.bounds.size.height) * 0.9;
+        UIView *ball = [[UIView alloc] initWithFrame:CGRectMake((box.bounds.size.width - d) / 2,
+                                                                (box.bounds.size.height - d) / 2, d, d)];
+        ball.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin |
+                                UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
         ball.backgroundColor = [UIColor colorWithRed:0.13 green:0.85 blue:0.55 alpha:1.0];
         ball.layer.cornerRadius = d / 2;
         ball.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -133,11 +139,10 @@
         box.layer.cornerRadius = 10;
         box.layer.borderColor = [UIColor colorWithRed:0.13 green:0.85 blue:0.55 alpha:0.8].CGColor;
         box.layer.borderWidth = 1.5;
-        box.clipsToBounds = YES;
         NSArray *items = @[@"启动应用", @"过直播-关", @"允许截屏"];
         CGFloat rowH = box.bounds.size.height / items.count;
         for (NSInteger i = 0; i < items.count; i++) {
-            UILabel *row = [[UILabel alloc] initWithFrame:CGRectMake(6, i * rowH, box.bounds.size.width - 12, rowH)];
+            UILabel *row = [[UILabel alloc] initWithFrame:CGRectMake(6, i * rowH + 2, box.bounds.size.width - 12, rowH - 4)];
             row.text = items[i];
             row.textColor = UIColor.whiteColor;
             row.font = [UIFont systemFontOfSize:11];
@@ -207,15 +212,21 @@
                 [[AVPictureInPictureVideoCallViewController alloc] init];
             vc.preferredContentSize = CGSizeMake(84, 84);
 
+            self.videoCallVC = vc;
+            // 正确 API：initWithActiveVideoCallSourceView:contentViewController:
+            // sourceView 决定 PiP 容器比例：用一个 84x84 的方形 view（贴在宿主上、可见），
+            // 这样 PiP 窗口就是方形小球，而不是预览框的 16:9 大卡片。
+            UIView *source = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 84, 84)];
+            source.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+            source.hidden = NO;   // 必须在屏：hidden/alpha≈0 会让 possible 恒 NO
+            [self.hostView ?: vc.view addSubview:source];
+            self.iconSourceView = source;
+
             UIView *cv = vc.view;
             cv.backgroundColor = UIColor.clearColor;
             self.hudExpanded = NO;
             [self buildIconContentInView:cv];
 
-            self.videoCallVC = vc;
-            // 正确 API：initWithActiveVideoCallSourceView:contentViewController:
-            // sourceView 必须是真正在屏的 view（用 attachToView 传入的预览框）
-            UIView *source = self.hostView ?: cv;
             self.contentSource =
                 [[AVPictureInPictureControllerContentSource alloc]
                     initWithActiveVideoCallSourceView:source
