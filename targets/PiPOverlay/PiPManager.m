@@ -139,15 +139,28 @@
         AVPictureInPictureController *pip =
             [[AVPictureInPictureController alloc] initWithContentSource:self.contentSource];
         pip.delegate = self;
-        pip.canStartPictureInPictureAutomaticallyFromInline = NO;
+        // FIX: startPictureInPicture is invoked from the KVO callback
+        // (async, outside the button's gesture stack). iOS silently rejects
+        // that unless automatic inline start is enabled.
+        pip.canStartPictureInPictureAutomaticallyFromInline = YES;
         self.pip = pip;
+
+        // FIX: activate a movie-playback audio session up front so that
+        // pictureInPicturePossible can turn YES as soon as the first frame is
+        // rendered, instead of only after the user taps the button.
+        NSError *aerr = nil;
+        AVAudioSession *as = [AVAudioSession sharedInstance];
+        [as setCategory:AVAudioSessionCategoryPlayback
+                   mode:AVAudioSessionModeMoviePlayback
+                options:0 error:&aerr];
+        [as setActive:YES error:&aerr];
 
         [pip addObserver:self
               forKeyPath:@"pictureInPicturePossible"
                  options:NSKeyValueObservingOptionNew
                  context:NULL];
         self.observing = YES;
-        [self log:@"controller 已创建，开始监听 possible"];
+        [self log:@"controller 已创建，audio session 已激活，开始监听 possible"];
     }
 }
 
