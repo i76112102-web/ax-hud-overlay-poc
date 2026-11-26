@@ -38,6 +38,7 @@ jobs:
           name: ipa-unsigned-${{ github.run_number }}
           path: |
             build/*.ipa
+            build/tweaks/*.dylib
             build/SHA256SUMS.txt
             build/build-info.txt
           if-no-files-found: error
@@ -56,11 +57,11 @@ jobs:
           fi
           NOTES="$(cat build/build-info.txt)"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" build/*.ipa build/SHA256SUMS.txt build/build-info.txt --clobber
+              gh release upload "$TAG" build/*.ipa build/tweaks/*.dylib build/SHA256SUMS.txt build/build-info.txt --clobber
           else
             gh release create "$TAG" \
               --title "$TAG" \
               --notes "$NOTES" \
-              build/*.ipa build/SHA256SUMS.txt build/build-info.txt
+                build/*.ipa build/tweaks/*.dylib build/SHA256SUMS.txt build/build-info.txt
           fi
           echo "release: $TAG"

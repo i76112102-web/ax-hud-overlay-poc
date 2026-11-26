@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build"
 MIN_IOS="${MIN_IOS:-15.0}"
-TARGETS="${TARGETS:-PiPOverlay HUDKeepAlive ScreenShield HUDMenu}"
+TARGETS="${TARGETS:-PiPOverlay HUDKeepAlive ScreenShield HUDMenu HUDOverlay}"
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 CLANG="$(xcrun --sdk iphoneos -f clang)"
@@ -41,6 +41,30 @@ for T in $TARGETS; do
   SRC="$ROOT/targets/$T"
   if [ ! -d "$SRC" ]; then
     echo "!! skip $T (no such target dir)"
+    continue
+  fi
+
+  # ---- dylib target（tweak）：编译成动态库，不打包成 App ----
+  if [ -f "$SRC/$T.m" ] && [ "$(basename "$SRC")" = "HUDOverlay" ]; then
+    mkdir -p "$OUT/tweaks"
+    echo "== $T : tweak dylib =="
+    "$CLANG" \
+      -target "arm64-apple-ios$MIN_IOS" \
+      -isysroot "$SDK" \
+      -dynamiclib \
+      -fobjc-arc \
+      -O2 -DNDEBUG \
+      -Wall -Wno-unused-variable -Wno-deprecated-declarations \
+      -I "$SRC" \
+      -framework Foundation -framework UIKit -framework QuartzCore \
+      "$SRC/$T.m" \
+      -o "$OUT/tweaks/$T.dylib"
+    file "$OUT/tweaks/$T.dylib"
+    if ! file "$OUT/tweaks/$T.dylib" | grep -q 'arm64'; then
+      echo "!! $T dylib is not arm64"; exit 1
+    fi
+    ls -lh "$OUT/tweaks/$T.dylib"
+    echo
     continue
   fi
 
@@ -94,6 +118,9 @@ done
 
 # ---- 摘要 ----
 ( cd "$OUT" && shasum -a 256 ./*.ipa | tee SHA256SUMS.txt )
+if [ -d "$OUT/tweaks" ]; then
+  ( cd "$OUT/tweaks" && shasum -a 256 ./*.dylib >> ../SHA256SUMS.txt )
+fi
 
 # ---- 构建信息 ----
 {
