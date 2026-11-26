@@ -30,9 +30,9 @@ echo
 
 # ---- DIAG: dump available PiP content source initializers ----
 echo "== PiP ContentSource API =="
-CSH=$(grep -rl 'interface AVPictureInPictureControllerContentSource' "$SDK/System/Library/Frameworks/AVKit.framework/Headers/" 2>/dev/null | head -1)
-echo "CSH=$CSH"
-[ -n "$CSH" ] && grep -n -E '^\-|init|ContentViewController|VideoCall|sourceView|@interface' "$CSH" | head -80 || true
+grep -rn 'VideoCall\|contentViewController\|sourceView' "$SDK/System/Library/Frameworks/AVKit.framework/Headers/" 2>/dev/null | grep -i 'init\|source\|content' | head -60 || true
+echo "-- all PiP headers --"
+ls "$SDK/System/Library/Frameworks/AVKit.framework/Headers/" | grep -i picture || true
 echo
 
 rm -rf "$OUT"
