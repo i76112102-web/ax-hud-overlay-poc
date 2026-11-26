@@ -57,12 +57,11 @@ static NSString *const kTargetName = @"ax.target.name";
 
     // AX 是启动后浮球常驻，不靠用户点按钮。scene 就绪后自动挂 HUD。
     // didFinishLaunching 时 windowScene 可能尚未连接，用通知兜底。
-    if (@available(iOS 13.0, *)) {
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(onSceneConnected:)
-                                                     name:UISceneDidConnectNotification
-                                                   object:nil];
-    }
+    // 常量名用字符串字面量，避免纯 clang 交叉编译时 UIKit 通知常量未声明。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onSceneConnected:)
+                                                 name:@"UISceneDidConnectNotification"
+                                               object:nil];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self ensureHUD];   // 已连接时立即挂；未连接则由通知兜底
     });

@@ -12,6 +12,7 @@
 
 #import "AudioKeepAlive.h"
 #import <AVFoundation/AVFoundation.h>
+#import <UIKit/UIKit.h>
 
 @interface AudioKeepAlive ()
 @property (nonatomic, strong) AVAudioPlayer *player;
@@ -84,11 +85,11 @@ static NSData *SilentWavData(void) {
     // 切后台/回前台都强制重新激活音频会话并续播，防止系统回收时停掉。
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(onForeground:)
-                                                 name:UIApplicationDidBecomeActiveNotification
+                                                 name:@"UIApplicationDidBecomeActiveNotification"
                                                object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(onBackground:)
-                                                 name:UIApplicationDidEnterBackgroundNotification
+                                                 name:@"UIApplicationDidEnterBackgroundNotification"
                                                object:nil];
 }
 
