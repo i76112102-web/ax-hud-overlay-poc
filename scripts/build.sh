@@ -28,12 +28,6 @@ echo "SDK: $SDK"
 echo "min iOS: $MIN_IOS"
 echo
 
-# ---- DIAG: dump available PiP content source initializers ----
-echo "== PiP ContentSource API =="
-grep -rn 'VideoCall\|contentViewController\|sourceView' "$SDK/System/Library/Frameworks/AVKit.framework/Headers/" 2>/dev/null | grep -i 'init\|source\|content' | head -60 || true
-echo "-- all PiP headers --"
-ls "$SDK/System/Library/Frameworks/AVKit.framework/Headers/" | grep -i picture || true
-echo
 
 rm -rf "$OUT"
 mkdir -p "$OUT"

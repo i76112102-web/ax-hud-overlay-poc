@@ -161,10 +161,13 @@
             [cv addSubview:ball];
 
             self.videoCallVC = vc;
+            // 正确 API：initWithActiveVideoCallSourceView:contentViewController:
+            // sourceView 必须是真正在屏的 view（用 attachToView 传入的预览框）
+            UIView *source = self.hostView ?: cv;
             self.contentSource =
                 [[AVPictureInPictureControllerContentSource alloc]
-                    initWithContentViewController:vc
-                       pictureInPictureViewController:vc];
+                    initWithActiveVideoCallSourceView:source
+                                contentViewController:vc];
             [self log:@"contentSource = video-call 型（84x84 圆标，无播放控件）"];
         } else {
             self.contentSource =
