@@ -20,8 +20,10 @@
 
 + (instancetype)attachToScene:(UIWindowScene *)scene {
     HUDMenuWindow *w = [[HUDMenuWindow alloc] initWithWindowScene:scene];
-    // 压过 alert，但不用 CGFLOAT_MAX —— 太大会被系统当成非法层级
-    w.windowLevel = UIWindowLevelAlert + 1000.0;
+    // AX Pro Max 1.5.3 静态实测真值（常量 VA 0x100CD5338，字节 00 00 00 40 D1 12 63 41）
+    // syslog 铁证：Window did update windowLevel(10000000.0) 后持续 visible，
+    // 期间目标 App 进前台仍不被摘除。此前的 3000 是错误值，从未对齐 AX。
+    w.windowLevel = 10000010.0;
     w.backgroundColor = [UIColor clearColor];
     w.rootViewController = [UIViewController new];
     w.rootViewController.view.backgroundColor = [UIColor clearColor];
@@ -39,6 +41,8 @@
 
 // 不抢 key：宿主 App 的输入框、键盘不受影响
 - (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)_canBecomeKeyWindow { return NO; }
+- (BOOL)_isApplicationKeyWindow { return NO; }
 - (BOOL)canBecomeFocused  { return NO; }
 
 // 命中测试要放开，否则浮球收不到点击

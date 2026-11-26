@@ -59,9 +59,11 @@ static NSData *SilentWavData(void) {
 - (void)start {
     NSError *err = nil;
     AVAudioSession *s = [AVAudioSession sharedInstance];
+    // AX 实测：AVAudioSessionCategoryPlayback + MixWithOthers，
+    // 静音 wav 无限循环，让 App 切后台后维持 running-active 不被冻结。
     [s setCategory:AVAudioSessionCategoryPlayback
               mode:AVAudioSessionModeDefault
-           options:0
+           options:AVAudioSessionCategoryOptionMixWithOthers
              error:&err];
     [s setActive:YES error:&err];
     if (err) NSLog(@"[keepalive] session: %@", err);
@@ -79,13 +81,35 @@ static NSData *SilentWavData(void) {
                                              selector:@selector(onInterruption:)
                                                  name:AVAudioSessionInterruptionNotification
                                                object:nil];
+    // 切后台/回前台都强制重新激活音频会话并续播，防止系统回收时停掉。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onForeground:)
+                                                 name:UIApplicationDidBecomeActiveNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onBackground:)
+                                                 name:UIApplicationDidEnterBackgroundNotification
+                                               object:nil];
 }
 
 - (void)onInterruption:(NSNotification *)n {
     NSNumber *type = n.userInfo[AVAudioSessionInterruptionTypeKey];
     if (type.unsignedIntegerValue == AVAudioSessionInterruptionTypeEnded) {
+        [self reactivateAndPlay];
+    }
+}
+
+- (void)onForeground:(NSNotification *)n { [self reactivateAndPlay]; }
+- (void)onBackground:(NSNotification *)n { [self reactivateAndPlay]; }
+
+- (void)reactivateAndPlay {
+    AVAudioSession *s = [AVAudioSession sharedInstance];
+    [s setActive:YES error:nil];
+    if (self.player && !self.player.isPlaying) {
+        [self.player prepareToPlay];
         [self.player play];
     }
+    NSLog(@"[keepalive] reactivate playing=%d", self.player.isPlaying);
 }
 
 - (void)stop {

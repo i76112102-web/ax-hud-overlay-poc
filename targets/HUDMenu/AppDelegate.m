@@ -55,6 +55,18 @@ static NSString *const kTargetName = @"ax.target.name";
     // 后台保活：HUD 与进程常驻（对应样本的 Library/ax-hud-keepalive.wav）
     [[AudioKeepAlive shared] start];
 
+    // AX 是启动后浮球常驻，不靠用户点按钮。scene 就绪后自动挂 HUD。
+    // didFinishLaunching 时 windowScene 可能尚未连接，用通知兜底。
+    if (@available(iOS 13.0, *)) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(onSceneConnected:)
+                                                     name:UISceneDidConnectNotification
+                                                   object:nil];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self ensureHUD];   // 已连接时立即挂；未连接则由通知兜底
+    });
+
     // 对应样本 scheduleOrientationSynchronizationAfterAppSwitch：
     // 从别的 App 切回来时，回主线程重新算一遍 HUD 几何
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -260,6 +272,12 @@ static NSString *const kTargetName = @"ax.target.name";
 - (void)onStartHUD {
     [self ensureHUD];
     self.hintLabel.text = @"状态：HUD 已启动（点浮球展开菜单）";
+}
+
+- (void)onSceneConnected:(NSNotification *)n {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.hudWindow) [self ensureHUD];
+    });
 }
 
 #pragma mark - HUD
