@@ -13,6 +13,8 @@
 @property (nonatomic, strong) AVPictureInPictureController *pip;
 /// 必须强引用，历史上出现过 controller 不持有 contentSource 就静默失效的情况
 @property (nonatomic, strong) AVPictureInPictureControllerContentSource *contentSource;
+/// video-call 型 PiP 的内容 VC：无播放控件、尺寸由 preferredContentSize 决定
+@property (nonatomic, strong) AVPictureInPictureVideoCallViewController *videoCallVC;
 @property (nonatomic, weak) UIView *hostView;
 @property (nonatomic, assign) BOOL playing;
 @property (nonatomic, assign) CMTime pushedTime;
@@ -32,7 +34,7 @@
 }
 
 - (instancetype)init {
-    if (self = [super init]) { _keepAliveEnabled = YES; }
+    if (self = [super init]) { _keepAliveEnabled = YES; _useIconStyle = YES; }
     return self;
 }
 
@@ -132,10 +134,44 @@
         return;
     }
     if (@available(iOS 15.0, *)) {
-        self.contentSource =
-            [[AVPictureInPictureControllerContentSource alloc]
-                initWithSampleBufferDisplayLayer:self.displayLayer
-                                playbackDelegate:self];
+        if (self.useIconStyle) {
+            // ---- AX 风格：video-call 型 PiP ----
+            // 无播放控件、尺寸由 preferredContentSize 决定（小圆标）。
+            AVPictureInPictureVideoCallViewController *vc =
+                [[AVPictureInPictureVideoCallViewController alloc] init];
+            vc.preferredContentSize = CGSizeMake(84, 84);
+
+            // 用纯 UIView 画圆标（video-call 型 PiP 直接合成 VC.view，不需要 sampleBuffer layer）
+            UIView *cv = vc.view;
+            cv.backgroundColor = [UIColor clearColor];
+            CGFloat d = 84;
+            UIView *ball = [[UIView alloc] initWithFrame:CGRectMake(0, 0, d, d)];
+            ball.center = CGPointMake(d / 2, d / 2);
+            ball.backgroundColor = [UIColor colorWithRed:0.13 green:0.85 blue:0.55 alpha:1.0];
+            ball.layer.cornerRadius = d / 2;
+            ball.layer.shadowColor = UIColor.blackColor.CGColor;
+            ball.layer.shadowOpacity = 0.4;
+            ball.layer.shadowRadius = 6;
+            UILabel *lab = [[UILabel alloc] initWithFrame:ball.bounds];
+            lab.text = @"AX";
+            lab.textAlignment = NSTextAlignmentCenter;
+            lab.textColor = UIColor.whiteColor;
+            lab.font = [UIFont boldSystemFontOfSize:22];
+            [ball addSubview:lab];
+            [cv addSubview:ball];
+
+            self.videoCallVC = vc;
+            self.contentSource =
+                [[AVPictureInPictureControllerContentSource alloc]
+                    initWithContentViewController:vc
+                       pictureInPictureViewController:vc];
+            [self log:@"contentSource = video-call 型（84x84 圆标，无播放控件）"];
+        } else {
+            self.contentSource =
+                [[AVPictureInPictureControllerContentSource alloc]
+                    initWithSampleBufferDisplayLayer:self.displayLayer
+                                    playbackDelegate:self];
+        }
         AVPictureInPictureController *pip =
             [[AVPictureInPictureController alloc] initWithContentSource:self.contentSource];
         pip.delegate = self;

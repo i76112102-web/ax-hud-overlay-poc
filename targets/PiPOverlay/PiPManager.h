@@ -37,6 +37,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 静音音频保活，默认 YES。切到目标 App 后进程靠它继续跑，才能持续推帧。
 @property (nonatomic, assign) BOOL keepAliveEnabled;
 
+/// YES = video-call 型 PiP（无播放控件、小图标，AX 风格）；NO = sampleBuffer 播放型（有播放键/进度条）。
+/// 默认 YES。必须在 attachToView 之前设置。
+@property (nonatomic, assign) BOOL useIconStyle;
+
 + (instancetype)shared;
 
 /// 把内容层挂到一个**可见**的 view 上（预览框）。挂载后立刻推一帧，
