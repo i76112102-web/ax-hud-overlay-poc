@@ -126,6 +126,9 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
         [ws appendLog:[NSString stringWithFormat:@"浮窗控件事件 playing=%d → 切换画面", playing]];
         [ws toggleMode];
     };
+    [PiPManager shared].onIconTapped = ^{
+        [ws appendLog:@"浮窗图标点击 → HUD 展开/收起"];
+    };
 
     [[PiPManager shared] attachToView:self.preview];
     [self startFrameTimer];

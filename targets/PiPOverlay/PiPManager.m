@@ -16,6 +16,8 @@
 /// video-call 型 PiP 的内容 VC：无播放控件、尺寸由 preferredContentSize 决定
 @property (nonatomic, strong) AVPictureInPictureVideoCallViewController *videoCallVC;
 @property (nonatomic, weak) UIView *hostView;
+@property (nonatomic, strong) UIView *iconContentView;   // icon 模式下 VC.view 里的内容容器
+@property (nonatomic, assign) BOOL hudExpanded;         // HUD 是否展开
 @property (nonatomic, assign) BOOL playing;
 @property (nonatomic, assign) CMTime pushedTime;
 @property (nonatomic, strong, nullable) AVAudioPlayer *keepAlivePlayer;
@@ -95,6 +97,70 @@
             self.displayLayer.error.localizedDescription ?: @"-"];
 }
 
+#pragma mark - icon 模式内容（圆标 / HUD 菜单）
+
+- (void)buildIconContentInView:(UIView *)host {
+    // 清掉旧内容
+    [self.iconContentView removeFromSuperview];
+    self.iconContentView = nil;
+
+    CGSize s = self.hudExpanded ? CGSizeMake(160, 120) : CGSizeMake(84, 84);
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, s.height)];
+    box.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    box.backgroundColor = UIColor.clearColor;
+    self.iconContentView = box;
+    [host addSubview:box];
+
+    if (!self.hudExpanded) {
+        // ---- 收起态：单个圆标铺满容器 ----
+        CGFloat d = MIN(box.bounds.size.width, box.bounds.size.height);
+        UIView *ball = [[UIView alloc] initWithFrame:CGRectMake(0, 0, d, d)];
+        ball.backgroundColor = [UIColor colorWithRed:0.13 green:0.85 blue:0.55 alpha:1.0];
+        ball.layer.cornerRadius = d / 2;
+        ball.layer.shadowColor = UIColor.blackColor.CGColor;
+        ball.layer.shadowOpacity = 0.4;
+        ball.layer.shadowRadius = 6;
+        UILabel *lab = [[UILabel alloc] initWithFrame:ball.bounds];
+        lab.text = @"AX";
+        lab.textAlignment = NSTextAlignmentCenter;
+        lab.textColor = UIColor.whiteColor;
+        lab.font = [UIFont boldSystemFontOfSize:22];
+        [ball addSubview:lab];
+        [box addSubview:ball];
+    } else {
+        // ---- 展开态：HUD 菜单（三个条目） ----
+        box.backgroundColor = [UIColor colorWithWhite:0.10 alpha:0.94];
+        box.layer.cornerRadius = 10;
+        box.layer.borderColor = [UIColor colorWithRed:0.13 green:0.85 blue:0.55 alpha:0.8].CGColor;
+        box.layer.borderWidth = 1.5;
+        box.clipsToBounds = YES;
+        NSArray *items = @[@"启动应用", @"过直播-关", @"允许截屏"];
+        CGFloat rowH = box.bounds.size.height / items.count;
+        for (NSInteger i = 0; i < items.count; i++) {
+            UILabel *row = [[UILabel alloc] initWithFrame:CGRectMake(6, i * rowH, box.bounds.size.width - 12, rowH)];
+            row.text = items[i];
+            row.textColor = UIColor.whiteColor;
+            row.font = [UIFont systemFontOfSize:11];
+            row.textAlignment = NSTextAlignmentCenter;
+            [box addSubview:row];
+        }
+    }
+
+    // 点整个内容区切换展开/收起
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onIconTap:)];
+    [box addGestureRecognizer:tap];
+    box.userInteractionEnabled = YES;
+}
+
+- (void)onIconTap:(UITapGestureRecognizer *)g {
+    self.hudExpanded = !self.hudExpanded;
+    // 展开 HUD 时把容器放大，收起时缩回圆标尺寸
+    self.videoCallVC.preferredContentSize = self.hudExpanded ? CGSizeMake(160, 120) : CGSizeMake(84, 84);
+    [self buildIconContentInView:self.videoCallVC.view];
+    [self log:@"icon 点击 → HUD %@", self.hudExpanded ? @"展开" : @"收起"];
+    if (self.onIconTapped) self.onIconTapped();
+}
+
 #pragma mark - 挂载
 
 - (void)attachToView:(UIView *)view {
@@ -141,24 +207,10 @@
                 [[AVPictureInPictureVideoCallViewController alloc] init];
             vc.preferredContentSize = CGSizeMake(84, 84);
 
-            // 用纯 UIView 画圆标（video-call 型 PiP 直接合成 VC.view，不需要 sampleBuffer layer）
             UIView *cv = vc.view;
-            cv.backgroundColor = [UIColor clearColor];
-            CGFloat d = 84;
-            UIView *ball = [[UIView alloc] initWithFrame:CGRectMake(0, 0, d, d)];
-            ball.center = CGPointMake(d / 2, d / 2);
-            ball.backgroundColor = [UIColor colorWithRed:0.13 green:0.85 blue:0.55 alpha:1.0];
-            ball.layer.cornerRadius = d / 2;
-            ball.layer.shadowColor = UIColor.blackColor.CGColor;
-            ball.layer.shadowOpacity = 0.4;
-            ball.layer.shadowRadius = 6;
-            UILabel *lab = [[UILabel alloc] initWithFrame:ball.bounds];
-            lab.text = @"AX";
-            lab.textAlignment = NSTextAlignmentCenter;
-            lab.textColor = UIColor.whiteColor;
-            lab.font = [UIFont boldSystemFontOfSize:22];
-            [ball addSubview:lab];
-            [cv addSubview:ball];
+            cv.backgroundColor = UIColor.clearColor;
+            self.hudExpanded = NO;
+            [self buildIconContentInView:cv];
 
             self.videoCallVC = vc;
             // 正确 API：initWithActiveVideoCallSourceView:contentViewController:

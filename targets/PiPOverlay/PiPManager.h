@@ -41,6 +41,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 默认 YES。必须在 attachToView 之前设置。
 @property (nonatomic, assign) BOOL useIconStyle;
 
+/// 图标模式下点球回调：用于切换 HUD 菜单展开/收起
+@property (nonatomic, copy, nullable) void (^onIconTapped)(void);
+
 + (instancetype)shared;
 
 /// 把内容层挂到一个**可见**的 view 上（预览框）。挂载后立刻推一帧，
